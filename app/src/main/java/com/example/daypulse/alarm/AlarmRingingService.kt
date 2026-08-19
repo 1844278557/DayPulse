@@ -39,13 +39,17 @@ class AlarmRingingService : Service() {
             return START_NOT_STICKY
         }
 
-        val stopIntent = Intent(this, AlarmActionReceiver::class.java).apply {
-            action = AlarmActionReceiver.ACTION_STOP
+        val stopIntent = Intent(this, AlarmActionReceiver::class.java).apply { action = AlarmActionReceiver.ACTION_STOP }
+        val stopPi = PendingIntent.getBroadcast(this, 22, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val ringIntent = Intent(this, AlarmRingActivity::class.java).apply {
+            putExtra(AlarmRingActivity.EXTRA_TITLE, rule.title)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        val stopPi = PendingIntent.getBroadcast(
+        val ringPi = PendingIntent.getActivity(
             this,
-            22,
-            stopIntent,
+            (30_000 + ruleId).toInt(),
+            ringIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -53,14 +57,15 @@ class AlarmRingingService : Service() {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(rule.title)
             .setContentText("提醒时间到了")
-            .setContentIntent(NotificationHelper.contentIntent(this))
+            .setContentIntent(ringPi)
+            .setFullScreenIntent(ringPi, true)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .addAction(android.R.drawable.ic_media_pause, "停止", stopPi)
             .build()
 
         startForeground((20_000 + ruleId).toInt(), notification)
-
         if (rule.sound) startRingtone()
         if (rule.vibration) startVibration()
 
@@ -91,9 +96,8 @@ class AlarmRingingService : Service() {
             getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
         val pattern = longArrayOf(0, 700, 350, 700, 350)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
-        } else {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        else {
             @Suppress("DEPRECATION")
             vibrator?.vibrate(pattern, 0)
         }
@@ -113,9 +117,7 @@ class AlarmRingingService : Service() {
 
 class AlarmActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == ACTION_STOP) {
-            context.stopService(Intent(context, AlarmRingingService::class.java))
-        }
+        if (intent.action == ACTION_STOP) context.stopService(Intent(context, AlarmRingingService::class.java))
     }
 
     companion object {
