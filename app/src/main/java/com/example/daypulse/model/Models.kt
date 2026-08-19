@@ -19,13 +19,16 @@ data class Habit(
     val id: Long,
     val title: String,
     val createdAt: Long,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val targetCount: Int = 1,
+    val unit: String = "次"
 )
 
 data class CheckIn(
     val id: Long,
     val habitId: Long,
     val dateKey: String,
+    val count: Int,
     val completedAt: Long
 )
 
