@@ -28,7 +28,67 @@ class SpeechInputController(
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
     }
 
-    init { recreateRecognizer() }
+    private val listener: RecognitionListener by lazy {
+        object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                active = true
+                onListeningChange(true)
+                onStatus("正在听…")
+            }
+
+            override fun onBeginningOfSpeech() {
+                active = true
+                onListeningChange(true)
+            }
+
+            override fun onRmsChanged(rmsdB: Float) = Unit
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() {
+                onListeningChange(false)
+                onStatus("正在识别…")
+            }
+
+            override fun onError(error: Int) {
+                active = false
+                onListeningChange(false)
+                if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 1) {
+                    busyRetryCount += 1
+                    onStatus("语音服务正在重置…")
+                    recreateRecognizer()
+                    handler.postDelayed({ start() }, 650)
+                    return
+                }
+                busyRetryCount = 0
+                onStatus(errorText(error))
+            }
+
+            override fun onResults(results: Bundle?) {
+                active = false
+                busyRetryCount = 0
+                onListeningChange(false)
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                if (!text.isNullOrBlank()) {
+                    onText(text)
+                    onStatus(null)
+                } else {
+                    onStatus("没听清，请再说一次")
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(onText)
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        }
+    }
+
+    init {
+        recreateRecognizer()
+    }
 
     fun start() {
         if (destroyed) return
@@ -80,53 +140,11 @@ class SpeechInputController(
         }
     }
 
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            active = true
-            onListeningChange(true)
-            onStatus("正在听…")
-        }
-        override fun onBeginningOfSpeech() { active = true; onListeningChange(true) }
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() { onListeningChange(false); onStatus("正在识别…") }
-
-        override fun onError(error: Int) {
-            active = false
-            onListeningChange(false)
-            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && busyRetryCount < 1) {
-                busyRetryCount += 1
-                onStatus("语音服务正在重置…")
-                recreateRecognizer()
-                handler.postDelayed({ start() }, 650)
-                return
-            }
-            busyRetryCount = 0
-            onStatus(errorText(error))
-        }
-
-        override fun onResults(results: Bundle?) {
-            active = false
-            busyRetryCount = 0
-            onListeningChange(false)
-            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            if (!text.isNullOrBlank()) {
-                onText(text)
-                onStatus(null)
-            } else onStatus("没听清，请再说一次")
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()?.takeIf { it.isNotBlank() }?.let(onText)
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-    }
-
     private fun errorText(code: Int): String = when (code) {
         SpeechRecognizer.ERROR_AUDIO -> "录音失败，请检查麦克风"
         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "没有麦克风权限"
-        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "语音服务网络不可用"
+        SpeechRecognizer.ERROR_NETWORK,
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "语音服务网络不可用"
         SpeechRecognizer.ERROR_NO_MATCH -> "没听清，请再说一次"
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "语音服务仍然繁忙，请稍后再试"
         SpeechRecognizer.ERROR_CLIENT -> "语音识别已停止"
