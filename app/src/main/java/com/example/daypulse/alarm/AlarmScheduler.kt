@@ -5,7 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import com.example.daypulse.MainActivity
+import com.example.daypulse.ForestMainActivity
 import com.example.daypulse.data.AppDatabase
 import com.example.daypulse.model.AlarmRule
 import com.example.daypulse.model.ScheduleType
@@ -32,15 +32,12 @@ class AlarmScheduler(private val context: Context) {
             val showIntent = PendingIntent.getActivity(
                 appContext,
                 (rule.id xor 0x5A5A).toInt(),
-                Intent(appContext, MainActivity::class.java).apply {
+                Intent(appContext, ForestMainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            alarmManager.setAlarmClock(
-                AlarmManager.AlarmClockInfo(next, showIntent),
-                operation
-            )
+            alarmManager.setAlarmClock(AlarmManager.AlarmClockInfo(next, showIntent), operation)
         } else {
             alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, operation)
         }
