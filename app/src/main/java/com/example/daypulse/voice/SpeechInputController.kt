@@ -23,6 +23,7 @@ class SpeechInputController(
     private var active = false
     private var finishing = false
     private var destroyed = false
+    private var busyRetryCount = 0
 
     private val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -40,25 +41,12 @@ class SpeechInputController(
             return
         }
 
-        releaseRecognizer(cancel = true)
-        recognizer = createFreshRecognizer().also { it.setRecognitionListener(listener) }
+        busyRetryCount = 0
         active = true
         finishing = false
         onListeningChange(true)
         onStatus("正在听… 松开后发送给 AI")
-
-        handler.postDelayed({
-            if (!destroyed && active) {
-                runCatching { recognizer?.startListening(intent) }
-                    .onFailure {
-                        active = false
-                        finishing = false
-                        onListeningChange(false)
-                        onStatus("语音识别启动失败，请再按住 AI 重试")
-                        releaseRecognizer(cancel = true)
-                    }
-            }
-        }, 120L)
+        startFreshRecognizer()
     }
 
     fun stopAndFinalize() {
@@ -88,14 +76,29 @@ class SpeechInputController(
     fun cancel() {
         active = false
         finishing = false
+        busyRetryCount = 0
         onListeningChange(false)
+        handler.removeCallbacksAndMessages(null)
         releaseRecognizer(cancel = true)
     }
 
     fun destroy() {
         destroyed = true
-        handler.removeCallbacksAndMessages(null)
         cancel()
+    }
+
+    private fun startFreshRecognizer() {
+        if (destroyed || !active || finishing) return
+        releaseRecognizer(cancel = true)
+        recognizer = createFreshRecognizer().also { it.setRecognitionListener(listener) }
+        runCatching { recognizer?.startListening(intent) }
+            .onFailure {
+                active = false
+                finishing = false
+                onListeningChange(false)
+                onStatus("语音识别启动失败，请再按住 AI 重试")
+                releaseRecognizer(cancel = true)
+            }
     }
 
     private fun createFreshRecognizer(): SpeechRecognizer {
@@ -118,7 +121,7 @@ class SpeechInputController(
 
     private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            if (active) {
+            if (active && !finishing) {
                 onListeningChange(true)
                 onStatus("正在听… 松开后发送给 AI")
             }
@@ -134,6 +137,17 @@ class SpeechInputController(
         }
 
         override fun onError(error: Int) {
+            if (
+                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY &&
+                active && !finishing && busyRetryCount < 1
+            ) {
+                busyRetryCount += 1
+                onStatus("语音服务繁忙，正在自动重试…")
+                releaseRecognizer(cancel = true)
+                handler.postDelayed({ startFreshRecognizer() }, 450L)
+                return
+            }
+
             active = false
             finishing = false
             onListeningChange(false)
@@ -144,6 +158,7 @@ class SpeechInputController(
         override fun onResults(results: Bundle?) {
             active = false
             finishing = false
+            busyRetryCount = 0
             onListeningChange(false)
             handler.removeCallbacksAndMessages(null)
             val text = results
@@ -177,7 +192,7 @@ class SpeechInputController(
         SpeechRecognizer.ERROR_NETWORK,
         SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "系统语音服务网络不可用"
         SpeechRecognizer.ERROR_NO_MATCH -> "没听清，请再按住 AI 说一次"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "系统语音服务被其他任务占用；本次已释放，重新按住 AI 即可"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "系统语音服务仍然繁忙，请稍后再按住 AI"
         SpeechRecognizer.ERROR_CLIENT -> "语音识别已取消，请重新按住 AI"
         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有检测到说话声音"
         SpeechRecognizer.ERROR_SERVER -> "系统语音服务暂时不可用"
