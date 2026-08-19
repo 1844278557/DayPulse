@@ -9,7 +9,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.example.daypulse.ForestMainActivity
+import com.example.daypulse.DayPulseActivity
 import com.example.daypulse.data.AppDatabase
 import com.example.daypulse.model.ScheduleType
 
@@ -61,7 +61,7 @@ object NotificationHelper {
         return PendingIntent.getActivity(
             context,
             100,
-            Intent(context, ForestMainActivity::class.java),
+            Intent(context, DayPulseActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
