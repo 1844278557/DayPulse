@@ -11,11 +11,13 @@ import com.example.daypulse.model.AiAlarmDraft
 import com.example.daypulse.model.AlarmRule
 import com.example.daypulse.model.CheckIn
 import com.example.daypulse.model.Habit
+import com.example.daypulse.model.ScheduleType
 import com.example.daypulse.model.WorkdayOverride
 import com.example.daypulse.security.SecureApiKeyStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
+import java.time.LocalTime
 
 class AppController(context: Context) {
     private val appContext = context.applicationContext
@@ -81,21 +83,56 @@ class AppController(context: Context) {
         val id = withContext(Dispatchers.IO) { db.insertAlarm(rule) }
         val stored = rule.copy(id = id)
         if (stored.enabled) scheduler.schedule(stored)
-        alarms = withContext(Dispatchers.IO) { db.getAlarms() }
+        refreshAlarms()
         return id
     }
 
+    suspend fun updateAlarm(rule: AlarmRule) {
+        require(rule.id > 0) { "无效的闹钟" }
+        scheduler.cancel(rule.id)
+        withContext(Dispatchers.IO) { db.updateAlarm(rule) }
+        if (rule.enabled) scheduler.schedule(rule)
+        refreshAlarms()
+    }
+
     suspend fun toggleAlarm(rule: AlarmRule) {
-        val enabled = !rule.enabled
-        withContext(Dispatchers.IO) { db.setAlarmEnabled(rule.id, enabled) }
-        if (enabled) scheduler.schedule(rule.copy(enabled = true)) else scheduler.cancel(rule.id)
-        alarms = withContext(Dispatchers.IO) { db.getAlarms() }
+        val updated = rule.copy(enabled = !rule.enabled)
+        updateAlarm(updated)
     }
 
     suspend fun deleteAlarm(rule: AlarmRule) {
         scheduler.cancel(rule.id)
         withContext(Dispatchers.IO) { db.deleteAlarm(rule.id) }
-        alarms = withContext(Dispatchers.IO) { db.getAlarms() }
+        refreshAlarms()
+    }
+
+    suspend fun deleteAlarms(rules: List<AlarmRule>) {
+        if (rules.isEmpty()) return
+        rules.forEach { scheduler.cancel(it.id) }
+        withContext(Dispatchers.IO) { rules.forEach { db.deleteAlarm(it.id) } }
+        refreshAlarms()
+    }
+
+    fun findAlarmMatches(draft: AiAlarmDraft): List<AlarmRule> {
+        val titleQuery = draft.title.trim()
+        val requestedTime = draft.time?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+        val criteriaCount = listOf(
+            titleQuery.isNotBlank(),
+            requestedTime != null,
+            draft.scheduleType != null,
+            draft.intervalMinutes != null,
+            draft.weekdays.isNotEmpty()
+        ).count { it }
+        if (criteriaCount == 0) return emptyList()
+
+        return alarms.filter { alarm ->
+            val titleOk = titleQuery.isBlank() || alarm.title.contains(titleQuery, ignoreCase = true) || titleQuery.contains(alarm.title, ignoreCase = true)
+            val timeOk = requestedTime == null || (alarm.hour == requestedTime.hour && alarm.minute == requestedTime.minute)
+            val typeOk = draft.scheduleType == null || alarm.scheduleType == draft.scheduleType
+            val intervalOk = draft.intervalMinutes == null || alarm.intervalMinutes == draft.intervalMinutes
+            val weekdayOk = if (draft.weekdays.isEmpty()) true else draft.weekdays.all { day -> alarm.weekdaysMask and (1 shl (day - 1)) != 0 }
+            titleOk && timeOk && typeOk && intervalOk && weekdayOk
+        }
     }
 
     suspend fun parseAi(command: String): Result<AiAlarmDraft> {
@@ -105,7 +142,8 @@ class AppController(context: Context) {
     }
 
     suspend fun saveApiKey(apiKey: String) {
-        withContext(Dispatchers.IO) { keyStore.save(apiKey) }
+        require(apiKey.isNotBlank()) { "API Key 不能为空" }
+        withContext(Dispatchers.IO) { keyStore.save(apiKey.trim()) }
         hasApiKey = withContext(Dispatchers.IO) { keyStore.hasKey() }
     }
 
@@ -115,6 +153,7 @@ class AppController(context: Context) {
     }
 
     suspend fun setWorkdayOverride(dateKey: String, isWorkday: Boolean) {
+        LocalDate.parse(dateKey)
         withContext(Dispatchers.IO) { db.setWorkdayOverride(dateKey, isWorkday) }
         workdayOverrides = withContext(Dispatchers.IO) { db.getWorkdayOverrides() }
         rescheduleWorkdayAlarms()
@@ -150,8 +189,12 @@ class AppController(context: Context) {
         checkIns = pair.second
     }
 
+    private suspend fun refreshAlarms() {
+        alarms = withContext(Dispatchers.IO) { db.getAlarms() }
+    }
+
     private suspend fun rescheduleWorkdayAlarms() {
-        alarms.filter { it.enabled && it.scheduleType.name == "WORKDAY" }.forEach { scheduler.schedule(it) }
+        alarms.filter { it.enabled && it.scheduleType == ScheduleType.WORKDAY }.forEach { scheduler.schedule(it) }
     }
 
     private data class Snapshot(
