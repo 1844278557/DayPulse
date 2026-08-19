@@ -2,7 +2,9 @@
     <style name="Theme.DayPulse" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#FAF8FF</item>
-        <item name="android:statusBarColor">#FAF8FF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:navigationBarColor">#FFF5DB</item>
+        <item name="android:statusBarColor">#FFF5DB</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>
