@@ -10,6 +10,11 @@ enum class ScheduleType {
     INTERVAL
 }
 
+enum class AiActionType {
+    CREATE,
+    DELETE
+}
+
 data class Habit(
     val id: Long,
     val title: String,
@@ -54,8 +59,9 @@ data class WorkdayOverride(
 )
 
 data class AiAlarmDraft(
-    val title: String,
-    val scheduleType: ScheduleType,
+    val action: AiActionType = AiActionType.CREATE,
+    val title: String = "",
+    val scheduleType: ScheduleType? = null,
     val date: String? = null,
     val time: String? = null,
     val weekdays: List<Int> = emptyList(),
@@ -64,5 +70,6 @@ data class AiAlarmDraft(
     val endTime: String? = null,
     val sound: Boolean = true,
     val vibration: Boolean = true,
-    val notification: Boolean = true
+    val notification: Boolean = true,
+    val deleteAllMatches: Boolean = false
 )
