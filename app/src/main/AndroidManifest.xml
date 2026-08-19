@@ -19,7 +19,7 @@
         android:theme="@style/Theme.DayPulse">
 
         <activity
-            android:name=".ForestMainActivity"
+            android:name=".DayPulseActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
