@@ -1,212 +1,145 @@
 package com.example.daypulse.voice
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import android.media.MediaRecorder
+import android.os.Build
+import com.example.daypulse.security.SecureApiKeyStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
+/**
+ * Voice input for DayPulse.
+ *
+ * We intentionally do not use Android SpeechRecognizer here. On some HarmonyOS/EMUI devices the
+ * recognizer service can start but never return a usable result. Instead we record a short local
+ * audio file and send it to SiliconFlow's speech-to-text endpoint using the same API key as AI.
+ */
 class SpeechInputController(
-    private val context: Context,
+    context: Context,
     private val onListeningChange: (Boolean) -> Unit,
     private val onStatus: (String?) -> Unit,
     private val onPartialText: (String) -> Unit = {},
     private val onFinalText: (String) -> Unit
 ) {
     private val appContext = context.applicationContext
-    private val handler = Handler(Looper.getMainLooper())
+    private val keyStore = SecureApiKeyStore(appContext)
+    private val transcriber = SiliconFlowTranscriber()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private var recognizer: SpeechRecognizer? = null
-    private var sessionActive = false
-    private var waitingForResult = false
+    private var recorder: MediaRecorder? = null
+    private var audioFile: File? = null
+    private var recording = false
+    private var transcribing = false
     private var destroyed = false
-    private var busyRetryCount = 0
-
-    private val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-        putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, appContext.packageName)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1_000L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6_000L)
-        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10_000L)
-    }
+    private var startedAt = 0L
 
     fun start() {
-        if (destroyed || sessionActive || waitingForResult) return
-        if (!SpeechRecognizer.isRecognitionAvailable(appContext)) {
-            onStatus("系统没有可用的语音识别服务，请检查系统语音组件")
-            return
-        }
+        if (destroyed || recording || transcribing) return
 
-        busyRetryCount = 0
-        sessionActive = true
-        waitingForResult = false
-        onListeningChange(true)
-        onStatus("正在听… 再点一次结束")
-        createAndStart()
+        val target = File(appContext.cacheDir, "daypulse_voice_${System.currentTimeMillis()}.m4a")
+        runCatching {
+            createRecorder().apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioSamplingRate(16_000)
+                setAudioEncodingBitRate(64_000)
+                setOutputFile(target.absolutePath)
+                prepare()
+                start()
+            }
+        }.onSuccess { ready ->
+            recorder = ready
+            audioFile = target
+            recording = true
+            startedAt = System.currentTimeMillis()
+            onListeningChange(true)
+            onPartialText("")
+            onStatus("正在录音… 再点一次 AI 结束")
+        }.onFailure {
+            releaseRecorder()
+            target.delete()
+            onListeningChange(false)
+            onStatus("无法启动麦克风录音，请检查录音权限或是否被其他应用占用")
+        }
     }
 
     fun stopAndFinalize() {
-        if (destroyed || !sessionActive || waitingForResult) return
-        sessionActive = false
-        waitingForResult = true
+        if (destroyed || !recording || transcribing) return
+        recording = false
         onListeningChange(false)
-        onStatus("正在识别…")
 
-        runCatching { recognizer?.stopListening() }
-            .onFailure {
-                waitingForResult = false
-                onStatus("结束录音失败，请再试一次")
-                releaseRecognizer(cancel = true)
+        val duration = System.currentTimeMillis() - startedAt
+        val file = audioFile
+        val stopResult = runCatching { recorder?.stop() }
+        releaseRecorder()
+
+        if (duration < 500L || stopResult.isFailure || file == null || !file.exists() || file.length() == 0L) {
+            file?.delete()
+            audioFile = null
+            onStatus("录音太短，请点一下 AI 后说完再点一次结束")
+            return
+        }
+
+        transcribing = true
+        onStatus("正在把语音转成文字…")
+        scope.launch {
+            val key = withContext(Dispatchers.IO) { keyStore.load() }
+            if (key.isNullOrBlank()) {
+                transcribing = false
+                file.delete()
+                audioFile = null
+                onStatus("请先在“我的”页面保存 SiliconFlow API Key")
+                return@launch
             }
 
-        handler.postDelayed({
-            if (waitingForResult) {
-                waitingForResult = false
-                onListeningChange(false)
-                onStatus("语音识别超时，请重新点击 AI")
-                releaseRecognizer(cancel = true)
-            }
-        }, 8_000L)
+            transcriber.transcribe(key, file)
+                .onSuccess { text ->
+                    onStatus(null)
+                    onFinalText(text)
+                }
+                .onFailure { error ->
+                    onStatus(error.message ?: "语音转文字失败，请再试一次")
+                }
+
+            transcribing = false
+            file.delete()
+            audioFile = null
+        }
     }
 
+    fun isBusy(): Boolean = recording || transcribing
+
     fun cancel() {
-        sessionActive = false
-        waitingForResult = false
-        busyRetryCount = 0
+        if (recording) runCatching { recorder?.stop() }
+        recording = false
+        transcribing = false
         onListeningChange(false)
-        handler.removeCallbacksAndMessages(null)
-        releaseRecognizer(cancel = true)
+        releaseRecorder()
+        audioFile?.delete()
+        audioFile = null
     }
 
     fun destroy() {
+        if (destroyed) return
         destroyed = true
         cancel()
+        scope.cancel()
     }
 
-    fun isBusy(): Boolean = sessionActive || waitingForResult
+    private fun createRecorder(): MediaRecorder =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(appContext)
+        else @Suppress("DEPRECATION") MediaRecorder()
 
-    private fun createAndStart() {
-        if (destroyed || !sessionActive || waitingForResult) return
-
-        releaseRecognizer(cancel = true)
-        recognizer = SpeechRecognizer.createSpeechRecognizer(appContext).also {
-            it.setRecognitionListener(listener)
-        }
-
-        handler.postDelayed({
-            if (!destroyed && sessionActive && !waitingForResult) {
-                runCatching { recognizer?.startListening(intent) }
-                    .onFailure {
-                        sessionActive = false
-                        onListeningChange(false)
-                        onStatus("语音识别启动失败，请重新点击 AI")
-                        releaseRecognizer(cancel = true)
-                    }
-            }
-        }, 180L)
-    }
-
-    private fun releaseRecognizer(cancel: Boolean) {
-        val current = recognizer ?: return
-        recognizer = null
-        if (cancel) runCatching { current.cancel() }
-        runCatching { current.destroy() }
-    }
-
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            if (sessionActive && !waitingForResult) {
-                onListeningChange(true)
-                onStatus("正在听… 再点一次结束")
-            }
-        }
-
-        override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-
-        override fun onEndOfSpeech() {
-            if (sessionActive) {
-                sessionActive = false
-                waitingForResult = true
-                onListeningChange(false)
-                onStatus("正在识别…")
-            }
-        }
-
-        override fun onError(error: Int) {
-            if (
-                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY &&
-                busyRetryCount < 1 &&
-                !destroyed
-            ) {
-                busyRetryCount += 1
-                sessionActive = true
-                waitingForResult = false
-                onListeningChange(true)
-                onStatus("语音服务繁忙，正在重新连接…")
-                releaseRecognizer(cancel = true)
-                handler.postDelayed({ createAndStart() }, 900L)
-                return
-            }
-
-            sessionActive = false
-            waitingForResult = false
-            onListeningChange(false)
-            handler.removeCallbacksAndMessages(null)
-            releaseRecognizer(cancel = false)
-            onStatus(errorText(error))
-        }
-
-        override fun onResults(results: Bundle?) {
-            sessionActive = false
-            waitingForResult = false
-            busyRetryCount = 0
-            onListeningChange(false)
-            handler.removeCallbacksAndMessages(null)
-
-            val text = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                ?.trim()
-
-            releaseRecognizer(cancel = false)
-            if (text.isNullOrBlank()) {
-                onStatus("没听清，请重新点击 AI 再说一次")
-            } else {
-                onStatus(null)
-                onFinalText(text)
-            }
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            partialResults
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?.let(onPartialText)
-        }
-
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-    }
-
-    private fun errorText(code: Int): String = when (code) {
-        SpeechRecognizer.ERROR_AUDIO -> "录音失败，请检查麦克风是否被其他 App 占用"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "没有麦克风权限，请在系统设置中允许录音"
-        SpeechRecognizer.ERROR_NETWORK,
-        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "系统语音服务网络不可用"
-        SpeechRecognizer.ERROR_NO_MATCH -> "没听清，请重新点击 AI 再说一次"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "系统语音服务仍然繁忙，请稍后重试"
-        SpeechRecognizer.ERROR_CLIENT -> "语音识别已中断，请重新点击 AI"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有检测到说话声音"
-        SpeechRecognizer.ERROR_SERVER -> "系统语音服务暂时不可用"
-        else -> "语音识别失败（$code）"
+    private fun releaseRecorder() {
+        val current = recorder ?: return
+        recorder = null
+        runCatching { current.reset() }
+        runCatching { current.release() }
     }
 }
