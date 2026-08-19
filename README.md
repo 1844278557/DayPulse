@@ -9,3 +9,5 @@ Android 原生的个人智能闹钟 + 每日打卡 App。
 Pushes to `main` automatically build a debug APK with GitHub Actions. The APK is uploaded as the `DayPulse-debug-apk` workflow artifact.
 
 当前独立仓库构建环境：JDK 17、Gradle 8.13、Android API 36。
+
+CI verify: local SpeechRecognizer visibility + 30s callback diagnostics.
