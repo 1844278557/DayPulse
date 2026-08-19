@@ -11,8 +11,11 @@ enum class ScheduleType {
 }
 
 enum class AiActionType {
+    GENERAL,
     CREATE,
-    DELETE
+    UPDATE,
+    DELETE,
+    CHECKIN
 }
 
 data class Habit(
@@ -63,7 +66,10 @@ data class WorkdayOverride(
 )
 
 data class AiAlarmDraft(
-    val action: AiActionType = AiActionType.CREATE,
+    val action: AiActionType = AiActionType.GENERAL,
+    val reply: String = "",
+
+    // CREATE / UPDATE desired values. Empty/null means keep existing value during UPDATE.
     val title: String = "",
     val scheduleType: ScheduleType? = null,
     val date: String? = null,
@@ -75,5 +81,14 @@ data class AiAlarmDraft(
     val sound: Boolean = true,
     val vibration: Boolean = true,
     val notification: Boolean = true,
-    val deleteAllMatches: Boolean = false
+
+    // UPDATE / DELETE matching criteria.
+    val targetTitle: String = "",
+    val targetTime: String? = null,
+    val targetScheduleType: ScheduleType? = null,
+    val deleteAllMatches: Boolean = false,
+
+    // CHECKIN matching / desired state.
+    val habitTitle: String = "",
+    val checkinCompleted: Boolean = true
 )
