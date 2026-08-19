@@ -107,22 +107,36 @@ class AppController(context: Context) {
     }
 
     fun findAlarmMatches(draft: AiAlarmDraft): List<AlarmRule> {
-        val titleQuery = draft.title.trim()
-        val requestedTime = draft.time?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
-        if (titleQuery.isBlank() && requestedTime == null && draft.scheduleType == null && draft.intervalMinutes == null && draft.weekdays.isEmpty()) return emptyList()
+        val titleQuery = draft.targetTitle.ifBlank {
+            if (draft.action == AiActionType.DELETE) draft.title.trim() else ""
+        }
+        val requestedTimeText = draft.targetTime ?: if (draft.action == AiActionType.DELETE) draft.time else null
+        val requestedTime = requestedTimeText?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+        val requestedType = draft.targetScheduleType ?: if (draft.action == AiActionType.DELETE) draft.scheduleType else null
+
+        if (titleQuery.isBlank() && requestedTime == null && requestedType == null) return emptyList()
+
         return alarms.filter { alarm ->
-            val titleOk = titleQuery.isBlank() || alarm.title.contains(titleQuery, true) || titleQuery.contains(alarm.title, true)
+            val titleOk = titleQuery.isBlank() ||
+                alarm.title.contains(titleQuery, ignoreCase = true) ||
+                titleQuery.contains(alarm.title, ignoreCase = true)
             val timeOk = requestedTime == null || (alarm.hour == requestedTime.hour && alarm.minute == requestedTime.minute)
-            val typeOk = draft.scheduleType == null || alarm.scheduleType == draft.scheduleType
-            val intervalOk = draft.intervalMinutes == null || alarm.intervalMinutes == draft.intervalMinutes
-            val weekdayOk = draft.weekdays.isEmpty() || draft.weekdays.all { day -> alarm.weekdaysMask and (1 shl (day - 1)) != 0 }
-            titleOk && timeOk && typeOk && intervalOk && weekdayOk
+            val typeOk = requestedType == null || alarm.scheduleType == requestedType
+            titleOk && timeOk && typeOk
+        }
+    }
+
+    fun findHabitMatches(draft: AiAlarmDraft): List<Habit> {
+        val query = draft.habitTitle.trim()
+        if (query.isBlank()) return emptyList()
+        return habits.filter { habit ->
+            habit.title.contains(query, ignoreCase = true) || query.contains(habit.title, ignoreCase = true)
         }
     }
 
     suspend fun parseAi(command: String): Result<AiAlarmDraft> {
         val key = withContext(Dispatchers.IO) { keyStore.load() }
-            ?: return Result.failure(IllegalStateException("请先在设置里填写硅基流动 API Key"))
+            ?: return Result.failure(IllegalStateException("请先在我的页面填写硅基流动 API Key"))
         return aiClient.parseAlarm(key, command)
     }
 
