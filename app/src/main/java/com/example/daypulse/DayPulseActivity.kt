@@ -11,17 +11,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,11 +33,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -43,16 +44,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddAlarm
 import androidx.compose.material.icons.rounded.Alarm
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.NotificationsNone
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.AlertDialog
@@ -93,7 +91,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -110,7 +107,6 @@ import com.example.daypulse.model.ScheduleType
 import com.example.daypulse.voice.SpeechInputController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -150,9 +146,7 @@ class DayPulseActivity : ComponentActivity() {
                     outline = UiLine,
                     error = UiDanger
                 )
-            ) {
-                DayPulseApp()
-            }
+            ) { DayPulseApp() }
         }
     }
 }
@@ -169,6 +163,7 @@ private fun DayPulseApp() {
     val context = LocalContext.current
     val c = remember { AppController(context) }
     val scope = rememberCoroutineScope()
+
     var tab by remember { mutableStateOf(MainTab.HOME) }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -176,38 +171,69 @@ private fun DayPulseApp() {
     var transcript by remember { mutableStateOf("") }
     var aiStatus by remember { mutableStateOf<String?>(null) }
     var aiBusy by remember { mutableStateOf(false) }
+    var voiceDialogOpen by remember { mutableStateOf(false) }
+    var voiceReply by remember { mutableStateOf("") }
     var aiDraft by remember { mutableStateOf<AiAlarmDraft?>(null) }
+
     var aiCreateDraft by remember { mutableStateOf<AlarmRule?>(null) }
+    var aiUpdateEditor by remember { mutableStateOf<AlarmRule?>(null) }
+    var updateCandidates by remember { mutableStateOf<List<AlarmRule>>(emptyList()) }
     var deleteCandidates by remember { mutableStateOf<List<AlarmRule>>(emptyList()) }
     var selectedDeleteIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var checkinCandidates by remember { mutableStateOf<List<Habit>>(emptyList()) }
+    var selectedHabitIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     fun submitVoiceToAi(text: String) {
         val request = text.trim()
         if (request.isBlank() || aiBusy) return
         transcript = request
+        voiceReply = ""
+        voiceDialogOpen = true
         aiBusy = true
-        aiStatus = "AI 正在理解你的需求…"
+        aiStatus = null
+
         scope.launch {
             c.parseAi(request).onSuccess { parsed ->
                 aiDraft = parsed
-                if (parsed.action == AiActionType.CREATE) {
-                    runCatching { parsed.toUiAlarmRule() }
-                        .onSuccess {
-                            aiCreateDraft = it
-                            aiStatus = null
-                        }
-                        .onFailure { aiStatus = it.message ?: "AI 结果需要补充" }
-                } else {
-                    deleteCandidates = c.findAlarmMatches(parsed)
-                    selectedDeleteIds = when {
-                        parsed.deleteAllMatches -> deleteCandidates.map { it.id }.toSet()
-                        deleteCandidates.size == 1 -> setOf(deleteCandidates.first().id)
-                        else -> emptySet()
+                voiceReply = parsed.reply.ifBlank {
+                    when (parsed.action) {
+                        AiActionType.GENERAL -> "我听到了。"
+                        AiActionType.CREATE -> "我理解为创建一个闹钟，确认一下设置。"
+                        AiActionType.UPDATE -> "我理解为修改一个已有闹钟，确认一下目标和新设置。"
+                        AiActionType.DELETE -> "我理解为删除闹钟，确认一下要删除哪些。"
+                        AiActionType.CHECKIN -> "我理解为进行一次打卡操作，确认一下项目。"
                     }
-                    aiStatus = if (deleteCandidates.isEmpty()) "没有找到匹配的闹钟" else null
+                }
+
+                when (parsed.action) {
+                    AiActionType.GENERAL -> Unit
+                    AiActionType.CREATE -> {
+                        runCatching { parsed.toUiAlarmRule() }
+                            .onSuccess { aiCreateDraft = it }
+                            .onFailure { voiceReply += "\n${it.message ?: "闹钟信息还不完整"}" }
+                    }
+                    AiActionType.UPDATE -> {
+                        updateCandidates = c.findAlarmMatches(parsed)
+                        if (updateCandidates.isEmpty()) voiceReply += "\n没有找到匹配的已有闹钟。"
+                    }
+                    AiActionType.DELETE -> {
+                        deleteCandidates = c.findAlarmMatches(parsed)
+                        selectedDeleteIds = when {
+                            parsed.deleteAllMatches -> deleteCandidates.map { it.id }.toSet()
+                            deleteCandidates.size == 1 -> setOf(deleteCandidates.first().id)
+                            else -> emptySet()
+                        }
+                        if (deleteCandidates.isEmpty()) voiceReply += "\n没有找到匹配的已有闹钟。"
+                    }
+                    AiActionType.CHECKIN -> {
+                        checkinCandidates = c.findHabitMatches(parsed)
+                        selectedHabitIds = if (checkinCandidates.size == 1) setOf(checkinCandidates.first().id) else emptySet()
+                        if (checkinCandidates.isEmpty()) voiceReply += "\n没有找到匹配的打卡项目。"
+                    }
                 }
             }.onFailure {
-                aiStatus = it.message ?: "AI 请求失败"
+                voiceReply = it.message ?: "AI 请求失败"
+                aiDraft = null
             }
             aiBusy = false
         }
@@ -225,7 +251,12 @@ private fun DayPulseApp() {
     DisposableEffect(speech) { onDispose { speech.destroy() } }
 
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        aiStatus = if (granted) "麦克风已允许，再长按 AI 说话" else "需要麦克风权限才能使用 AI 语音"
+        if (granted) {
+            transcript = ""
+            speech.start()
+        } else {
+            aiStatus = "需要麦克风权限才能使用 AI 语音"
+        }
     }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -245,14 +276,24 @@ private fun DayPulseApp() {
         }
     }
 
-    fun startVoice() {
-        transcript = ""
-        if (aiBusy) {
-            aiStatus = "AI 正在处理上一条需求"
+    fun toggleVoice() {
+        if (listening) {
+            speech.stopAndFinalize()
             return
         }
+        if (speech.isBusy()) {
+            aiStatus = "正在完成上一段语音识别…"
+            return
+        }
+        if (aiBusy) {
+            aiStatus = "AI 正在处理上一条内容"
+            return
+        }
+        transcript = ""
+        voiceReply = ""
+        voiceDialogOpen = false
+        aiDraft = null
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            aiStatus = "请先允许麦克风权限"
             micPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
             speech.start()
@@ -266,9 +307,7 @@ private fun DayPulseApp() {
                 current = tab,
                 listening = listening,
                 onSelect = { tab = it },
-                onVoiceStart = { startVoice() },
-                onVoiceEnd = { speech.stopAndFinalize() },
-                onVoiceHint = { aiStatus = "长按中间的 AI 按钮说话，松开后自动发送" }
+                onVoiceToggle = { toggleVoice() }
             )
         }
     ) { padding ->
@@ -277,18 +316,18 @@ private fun DayPulseApp() {
                 CircularProgressIndicator(Modifier.align(Alignment.Center), color = UiPine)
             } else {
                 when (tab) {
-                    MainTab.HOME -> HomeDashboard(c, nowMillis, onOpenAlarm = { tab = MainTab.ALARM }, onBell = { aiStatus = "暂无新通知" })
+                    MainTab.HOME -> HomeDashboard(c, nowMillis, onOpenAlarm = { tab = MainTab.ALARM })
                     MainTab.ALARM -> AlarmPage(c, nowMillis)
                     MainTab.STATS -> StatsPage(c)
                     MainTab.MINE -> MinePage(c)
                 }
             }
 
-            if (listening || aiBusy || !aiStatus.isNullOrBlank()) {
+            if ((listening || !aiStatus.isNullOrBlank()) && !voiceDialogOpen) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                        .padding(start = 18.dp, end = 18.dp, bottom = 8.dp)
                         .fillMaxWidth(),
                     color = if (listening) UiPine else UiPaper,
                     shape = RoundedCornerShape(14.dp),
@@ -297,11 +336,7 @@ private fun DayPulseApp() {
                 ) {
                     Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                         PixelText(
-                            text = when {
-                                listening -> "● 正在听… 松开后发送给 AI"
-                                aiBusy -> "AI 正在处理…"
-                                else -> aiStatus.orEmpty()
-                            },
+                            text = if (listening) "● 正在听… 再点一次 AI 结束" else aiStatus.orEmpty(),
                             color = if (listening) Color.White else UiPine,
                             weight = FontWeight.Bold
                         )
@@ -315,35 +350,119 @@ private fun DayPulseApp() {
         }
     }
 
-    aiCreateDraft?.let { initial ->
-        AlarmEditorDialog(
-            initial = initial,
-            title = "AI 已整理好 · 确认前可修改",
-            onDismiss = { aiCreateDraft = null; aiDraft = null },
-            onDelete = null,
-            onSave = { edited ->
-                scope.launch {
-                    c.addAlarm(edited.copy(id = 0))
-                    aiCreateDraft = null
-                    aiDraft = null
-                    aiStatus = "✓ 闹钟已创建"
+    if (voiceDialogOpen) {
+        VoiceAiDialog(
+            transcript = transcript,
+            reply = voiceReply,
+            busy = aiBusy,
+            action = aiDraft?.action,
+            actionReady = when (aiDraft?.action) {
+                AiActionType.CREATE -> aiCreateDraft != null
+                AiActionType.UPDATE -> updateCandidates.isNotEmpty()
+                AiActionType.DELETE -> deleteCandidates.isNotEmpty()
+                AiActionType.CHECKIN -> checkinCandidates.isNotEmpty()
+                else -> false
+            },
+            onDismiss = {
+                voiceDialogOpen = false
+                if (!aiBusy) aiDraft = null
+            },
+            onContinue = {
+                when (val draft = aiDraft) {
+                    null -> Unit
+                    else -> when (draft.action) {
+                        AiActionType.GENERAL -> voiceDialogOpen = false
+                        AiActionType.CREATE -> voiceDialogOpen = false
+                        AiActionType.UPDATE -> {
+                            voiceDialogOpen = false
+                            if (updateCandidates.size == 1) {
+                                aiUpdateEditor = applyAiUpdate(updateCandidates.first(), draft)
+                                updateCandidates = emptyList()
+                            }
+                        }
+                        AiActionType.DELETE -> voiceDialogOpen = false
+                        AiActionType.CHECKIN -> voiceDialogOpen = false
+                    }
                 }
             }
         )
     }
 
-    if (aiDraft?.action == AiActionType.DELETE && deleteCandidates.isNotEmpty()) {
+    aiCreateDraft?.let { initial ->
+        if (!voiceDialogOpen) {
+            AlarmEditorDialog(
+                initial = initial,
+                title = "AI 创建闹钟 · 确认前可修改",
+                onDismiss = { aiCreateDraft = null; aiDraft = null },
+                onDelete = null,
+                onSave = { edited ->
+                    scope.launch {
+                        c.addAlarm(edited.copy(id = 0))
+                        aiCreateDraft = null
+                        aiDraft = null
+                        aiStatus = "✓ 闹钟已创建"
+                    }
+                }
+            )
+        }
+    }
+
+    if (!voiceDialogOpen && aiDraft?.action == AiActionType.UPDATE && updateCandidates.size > 1) {
         AlertDialog(
-            onDismissRequest = {
-                aiDraft = null
-                deleteCandidates = emptyList()
-                selectedDeleteIds = emptySet()
+            onDismissRequest = { updateCandidates = emptyList(); aiDraft = null },
+            containerColor = UiPaper.copy(alpha = 0.96f),
+            title = { PixelText("选择要修改的闹钟", color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.titleLarge.fontSize) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    updateCandidates.forEach { alarm ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                aiUpdateEditor = applyAiUpdate(alarm, requireNotNull(aiDraft))
+                                updateCandidates = emptyList()
+                            },
+                            color = UiWarm,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                PixelText("%02d:%02d  %s".format(alarm.hour, alarm.minute, alarm.title), weight = FontWeight.Bold)
+                                PixelText(alarmSummary(alarm), color = UiSoft)
+                            }
+                        }
+                    }
+                }
             },
-            containerColor = UiPaper,
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { updateCandidates = emptyList(); aiDraft = null }) { Text("取消") } }
+        )
+    }
+
+    aiUpdateEditor?.let { editedInitial ->
+        if (!voiceDialogOpen) {
+            AlarmEditorDialog(
+                initial = editedInitial,
+                title = "AI 修改闹钟 · 确认前可修改",
+                onDismiss = { aiUpdateEditor = null; aiDraft = null },
+                onDelete = null,
+                onSave = { edited ->
+                    scope.launch {
+                        c.updateAlarm(edited.copy(id = editedInitial.id, createdAt = editedInitial.createdAt))
+                        aiUpdateEditor = null
+                        aiDraft = null
+                        aiStatus = "✓ 闹钟已修改"
+                    }
+                }
+            )
+        }
+    }
+
+    if (!voiceDialogOpen && aiDraft?.action == AiActionType.DELETE && deleteCandidates.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { aiDraft = null; deleteCandidates = emptyList(); selectedDeleteIds = emptySet() },
+            containerColor = UiPaper.copy(alpha = 0.96f),
             title = { PixelText("AI 删除确认", weight = FontWeight.Black, color = UiDanger, size = MaterialTheme.typography.titleLarge.fontSize) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    PixelText("AI 找到以下闹钟，请确认：", color = UiSoft)
+                    PixelText("请勾选要删除的闹钟：", color = UiSoft)
                     deleteCandidates.forEach { alarm ->
                         Row(
                             Modifier.fillMaxWidth().clickable {
@@ -353,7 +472,7 @@ private fun DayPulseApp() {
                         ) {
                             Checkbox(checked = alarm.id in selectedDeleteIds, onCheckedChange = null)
                             Column(Modifier.weight(1f)) {
-                                PixelText(alarm.title.ifBlank { "未命名闹钟" }, weight = FontWeight.Bold)
+                                PixelText("%02d:%02d  %s".format(alarm.hour, alarm.minute, alarm.title), weight = FontWeight.Bold)
                                 PixelText(alarmSummary(alarm), color = UiSoft)
                             }
                         }
@@ -376,15 +495,123 @@ private fun DayPulseApp() {
                     }
                 ) { Text("确认删除") }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    aiDraft = null
-                    deleteCandidates = emptyList()
-                    selectedDeleteIds = emptySet()
-                }) { Text("取消") }
-            }
+            dismissButton = { TextButton(onClick = { aiDraft = null; deleteCandidates = emptyList(); selectedDeleteIds = emptySet() }) { Text("取消") } }
         )
     }
+
+    if (!voiceDialogOpen && aiDraft?.action == AiActionType.CHECKIN && checkinCandidates.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { aiDraft = null; checkinCandidates = emptyList(); selectedHabitIds = emptySet() },
+            containerColor = UiPaper.copy(alpha = 0.96f),
+            title = { PixelText("AI 打卡确认", color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.titleLarge.fontSize) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    PixelText(if (aiDraft?.checkinCompleted == false) "确认取消以下打卡：" else "确认完成以下打卡：", color = UiSoft)
+                    checkinCandidates.forEach { habit ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                selectedHabitIds = if (habit.id in selectedHabitIds) selectedHabitIds - habit.id else selectedHabitIds + habit.id
+                            },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(checked = habit.id in selectedHabitIds, onCheckedChange = null)
+                            PixelText(habit.title, modifier = Modifier.weight(1f), weight = FontWeight.Bold)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = selectedHabitIds.isNotEmpty(),
+                    onClick = {
+                        val completed = aiDraft?.checkinCompleted != false
+                        scope.launch {
+                            checkinCandidates.filter { it.id in selectedHabitIds }.forEach { c.setHabitCompleted(it, completed) }
+                            aiStatus = if (completed) "✓ 打卡已完成" else "✓ 已取消打卡"
+                            aiDraft = null
+                            checkinCandidates = emptyList()
+                            selectedHabitIds = emptySet()
+                        }
+                    }
+                ) { Text("确认") }
+            },
+            dismissButton = { TextButton(onClick = { aiDraft = null; checkinCandidates = emptyList(); selectedHabitIds = emptySet() }) { Text("取消") } }
+        )
+    }
+}
+
+@Composable
+private fun VoiceAiDialog(
+    transcript: String,
+    reply: String,
+    busy: Boolean,
+    action: AiActionType?,
+    actionReady: Boolean,
+    onDismiss: () -> Unit,
+    onContinue: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = UiPaper.copy(alpha = 0.94f),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(34.dp).background(UiPine, CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Mic, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                PixelText("DayPulse AI", color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.titleLarge.fontSize)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(color = UiWarm.copy(alpha = 0.9f), shape = RoundedCornerShape(12.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        PixelText("你刚才说", color = UiSoft, size = MaterialTheme.typography.labelMedium.fontSize)
+                        Spacer(Modifier.height(3.dp))
+                        PixelText(transcript.ifBlank { "…" }, weight = FontWeight.Bold)
+                    }
+                }
+
+                if (busy) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = UiPine)
+                        Spacer(Modifier.width(9.dp))
+                        PixelText("AI 正在理解并回复…", color = UiSoft)
+                    }
+                } else if (reply.isNotBlank()) {
+                    Surface(color = Color.White.copy(alpha = 0.72f), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, UiLine)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                            PixelText("AI", color = UiPine, weight = FontWeight.Black)
+                            Spacer(Modifier.height(3.dp))
+                            PixelText(reply, color = UiInk)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (!busy && action != null && action != AiActionType.GENERAL && actionReady) {
+                Button(onClick = onContinue) {
+                    Text(
+                        when (action) {
+                            AiActionType.CREATE -> "确认闹钟"
+                            AiActionType.UPDATE -> "选择并修改"
+                            AiActionType.DELETE -> "选择并删除"
+                            AiActionType.CHECKIN -> "确认打卡"
+                            AiActionType.GENERAL -> "知道了"
+                        }
+                    )
+                }
+            } else if (!busy) {
+                Button(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+        dismissButton = {
+            if (!busy && action != null && action != AiActionType.GENERAL && actionReady) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        }
+    )
 }
 
 @Composable
@@ -392,10 +619,16 @@ private fun BottomDock(
     current: MainTab,
     listening: Boolean,
     onSelect: (MainTab) -> Unit,
-    onVoiceStart: () -> Unit,
-    onVoiceEnd: () -> Unit,
-    onVoiceHint: () -> Unit
+    onVoiceToggle: () -> Unit
 ) {
+    val pulseTransition = rememberInfiniteTransition(label = "ai-pulse")
+    val pulseAlpha by pulseTransition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.85f,
+        animationSpec = infiniteRepeatable(animation = tween(700), repeatMode = RepeatMode.Reverse),
+        label = "ai-pulse-alpha"
+    )
+
     Box(Modifier.fillMaxWidth().height(104.dp)) {
         Surface(
             modifier = Modifier.fillMaxWidth().height(74.dp).align(Alignment.BottomCenter),
@@ -411,30 +644,27 @@ private fun BottomDock(
             }
         }
 
+        if (listening) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .size(82.dp)
+                    .border(4.dp, UiAmber.copy(alpha = pulseAlpha), CircleShape)
+            )
+        }
+
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .size(70.dp)
                 .background(if (listening) UiOrange else UiPine, CircleShape)
                 .border(4.dp, UiPaper, CircleShape)
-                .pointerInput(listening) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
-                        val releasedQuickly = withTimeoutOrNull(280L) { waitForUpOrCancellation() }
-                        if (releasedQuickly == null) {
-                            onVoiceStart()
-                            waitForUpOrCancellation()
-                            onVoiceEnd()
-                        } else {
-                            onVoiceHint()
-                        }
-                    }
-                },
+                .clickable(onClick = onVoiceToggle),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 if (listening) Icons.Rounded.GraphicEq else Icons.Rounded.Mic,
-                contentDescription = "长按 AI 语音",
+                contentDescription = if (listening) "结束 AI 语音" else "开始 AI 语音",
                 tint = Color.White,
                 modifier = Modifier.size(34.dp)
             )
@@ -457,13 +687,16 @@ private fun DockItem(tab: MainTab, current: MainTab, onSelect: (MainTab) -> Unit
 }
 
 @Composable
-private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> Unit, onBell: () -> Unit) {
+private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> Unit) {
     val scope = rememberCoroutineScope()
     val todayHabits = c.todayHabits()
     val done = c.completedTodayCount()
     val progress = if (todayHabits.isEmpty()) 0f else done.toFloat() / todayHabits.size
+
+    // The home summary intentionally excludes INTERVAL alarms. Interval reminders can fire many
+    // times a day and would otherwise constantly replace the user's meaningful "next alarm".
     val nextAlarm = c.alarms
-        .filter { it.enabled }
+        .filter { it.enabled && it.scheduleType != ScheduleType.INTERVAL }
         .mapNotNull { alarm -> c.scheduler.nextTriggerMillis(alarm, nowMillis)?.let { alarm to it } }
         .minByOrNull { it.second }
 
@@ -478,14 +711,7 @@ private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> 
         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                PixelAvatar()
-                Spacer(Modifier.width(12.dp))
-                PixelText("DayPulse", modifier = Modifier.weight(1f), color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.headlineMedium.fontSize)
-                IconButton(onClick = onBell) { Icon(Icons.Rounded.NotificationsNone, "通知", tint = UiPine) }
-            }
-        }
+        item { HomeHeader() }
 
         item {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -497,10 +723,7 @@ private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> 
             }
         }
 
-        item {
-            NextAlarmCard(nextAlarm, nowMillis, onOpenAlarm)
-        }
-
+        item { NextAlarmCard(nextAlarm, nowMillis, onOpenAlarm) }
         item { PixelLandscape() }
 
         item {
@@ -566,13 +789,14 @@ private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> 
                     if (c.alarms.isEmpty()) {
                         EmptyLine("还没有闹钟，去闹钟页新建")
                     } else {
-                        c.alarms.sortedWith(compareBy<AlarmRule> { it.hour }.thenBy { it.minute }).forEachIndexed { index, alarm ->
+                        val sorted = c.alarms.sortedWith(compareBy<AlarmRule> { it.hour }.thenBy { it.minute })
+                        sorted.forEachIndexed { index, alarm ->
                             HomeAlarmRow(
                                 alarm = alarm,
                                 onEdit = { alarmEditor = alarm },
                                 onToggle = { scope.launch { c.toggleAlarm(alarm) } }
                             )
-                            if (index != c.alarms.lastIndex) HorizontalDivider(color = UiLine.copy(alpha = 0.55f))
+                            if (index != sorted.lastIndex) HorizontalDivider(color = UiLine.copy(alpha = 0.55f))
                         }
                     }
                 }
@@ -618,12 +842,61 @@ private fun HomeDashboard(c: AppController, nowMillis: Long, onOpenAlarm: () -> 
 }
 
 @Composable
-private fun PixelAvatar() {
-    Box(
-        modifier = Modifier.size(42.dp).background(UiWarm, RoundedCornerShape(8.dp)).border(2.dp, UiPine, RoundedCornerShape(8.dp)),
-        contentAlignment = Alignment.Center
+private fun HomeHeader() {
+    Box(Modifier.fillMaxWidth().height(52.dp)) {
+        PixelAvatar(modifier = Modifier.align(Alignment.CenterStart))
+        PixelText(
+            "DayPulse",
+            modifier = Modifier.align(Alignment.Center),
+            color = UiPine,
+            weight = FontWeight.Black,
+            size = MaterialTheme.typography.headlineMedium.fontSize
+        )
+        PixelSunDecoration(modifier = Modifier.align(Alignment.CenterEnd))
+    }
+}
+
+@Composable
+private fun PixelAvatar(modifier: Modifier = Modifier) {
+    Canvas(
+        modifier = modifier
+            .size(44.dp)
+            .background(UiWarm, RoundedCornerShape(9.dp))
+            .border(2.dp, UiPine, RoundedCornerShape(9.dp))
     ) {
-        PixelText("DP", color = UiPine, weight = FontWeight.Black)
+        val u = size.minDimension / 16f
+        fun block(x: Int, y: Int, w: Int, h: Int, color: Color) {
+            drawRect(color, Offset(x * u, y * u), Size(w * u, h * u))
+        }
+        // Original DayPulse pixel character: hair, face, eyes and green hoodie.
+        block(4, 2, 8, 2, Color(0xFF5B391F))
+        block(3, 4, 10, 2, Color(0xFF6B4324))
+        block(4, 6, 8, 5, Color(0xFFFFD6A3))
+        block(3, 6, 1, 3, Color(0xFF6B4324))
+        block(12, 6, 1, 3, Color(0xFF6B4324))
+        block(6, 7, 1, 1, UiInk)
+        block(9, 7, 1, 1, UiInk)
+        block(7, 9, 2, 1, Color(0xFFC76F57))
+        block(5, 11, 6, 1, UiPine)
+        block(3, 12, 10, 3, UiPine2)
+        block(7, 12, 2, 2, UiWarm)
+        block(2, 14, 12, 1, UiPine)
+    }
+}
+
+@Composable
+private fun PixelSunDecoration(modifier: Modifier = Modifier) {
+    Canvas(modifier.size(38.dp)) {
+        val c = Offset(size.width / 2, size.height / 2)
+        val p = size.minDimension / 10f
+        drawRect(UiAmber, Offset(c.x - p * 1.5f, c.y - p * 1.5f), Size(p * 3f, p * 3f))
+        val rays = listOf(
+            Offset(c.x - p / 2, 0f), Offset(c.x - p / 2, size.height - p),
+            Offset(0f, c.y - p / 2), Offset(size.width - p, c.y - p / 2),
+            Offset(p, p), Offset(size.width - p * 2, p),
+            Offset(p, size.height - p * 2), Offset(size.width - p * 2, size.height - p * 2)
+        )
+        rays.forEach { drawRect(UiOrange, it, Size(p, p)) }
     }
 }
 
@@ -642,17 +915,17 @@ private fun NextAlarmCard(next: Pair<AlarmRule, Long>?, nowMillis: Long, onOpenA
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 if (next == null) {
-                    PixelText("暂无启用中的闹钟", weight = FontWeight.Bold, color = UiPine)
-                    PixelText("去闹钟页添加一个新的提醒", color = UiSoft)
+                    PixelText("暂无普通闹钟", weight = FontWeight.Bold, color = UiPine)
+                    PixelText("循环/间隔提醒不会显示在这里", color = UiSoft)
                 } else {
                     val (alarm, trigger) = next
                     val target = Instant.ofEpochMilli(trigger).atZone(ZoneId.systemDefault())
                     PixelText(
-                        "下次闹钟：${remainingText(trigger - nowMillis)}后 · ${target.format(DateTimeFormatter.ofPattern("HH:mm"))} ${alarm.title.ifBlank { "提醒" }}",
+                        "${remainingText(trigger - nowMillis)}后 · ${target.format(DateTimeFormatter.ofPattern("HH:mm"))} ${alarm.title.ifBlank { "提醒" }}",
                         weight = FontWeight.Bold,
                         color = UiPine
                     )
-                    PixelText(alarmSummary(alarm), color = UiSoft)
+                    PixelText("下一次闹钟 · ${alarmSummary(alarm)}", color = UiSoft)
                 }
             }
             Icon(Icons.Rounded.KeyboardArrowRight, null, tint = UiSoft)
@@ -670,7 +943,6 @@ private fun PixelLandscape() {
             .border(1.dp, UiLine, RoundedCornerShape(18.dp))
     ) {
         drawRect(UiSky)
-
         val sunCenter = Offset(size.width * 0.73f, size.height * 0.36f)
         drawCircle(UiAmber, radius = size.minDimension * 0.11f, center = sunCenter)
         val ray = size.minDimension * 0.022f
@@ -740,9 +1012,7 @@ private fun HabitHomeRow(c: AppController, habit: Habit, onEdit: () -> Unit, onT
         Box(
             Modifier.size(32.dp).background(UiWarm, RoundedCornerShape(8.dp)).border(1.dp, UiLine, RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
-        ) {
-            PixelText(habitGlyph(habit.title), color = UiPine, weight = FontWeight.Black)
-        }
+        ) { PixelText(habitGlyph(habit.title), color = UiPine, weight = FontWeight.Black) }
         Spacer(Modifier.width(11.dp))
         Column(Modifier.weight(1f)) {
             PixelText(habit.title, weight = FontWeight.Bold, color = UiInk)
@@ -821,9 +1091,7 @@ private fun AlarmPage(c: AppController, nowMillis: Long) {
             }
         }
 
-        if (c.alarms.isEmpty()) {
-            item { EmptyLine("还没有闹钟，点右上角添加") }
-        }
+        if (c.alarms.isEmpty()) item { EmptyLine("还没有闹钟，点右上角添加") }
 
         items(c.alarms.sortedWith(compareBy<AlarmRule> { it.hour }.thenBy { it.minute }), key = { it.id }) { alarm ->
             val next = if (alarm.enabled) c.scheduler.nextTriggerMillis(alarm, nowMillis) else null
@@ -895,18 +1163,13 @@ private fun StatsPage(c: AppController) {
             PixelText("统计", color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.headlineMedium.fontSize)
             PixelText("看看这一段时间坚持得怎么样", color = UiSoft)
         }
-
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 StatCard("近 7 天", "${weekDone * 100 / weekTarget}%", "$weekDone/$weekTarget", Modifier.weight(1f))
                 StatCard("近 30 天", "${monthDone * 100 / monthTarget}%", "$monthDone/$monthTarget", Modifier.weight(1f))
             }
         }
-
-        item {
-            StatCard("最长连续", "${bestStreak} 天", "所有打卡项目中的最高纪录", Modifier.fillMaxWidth())
-        }
-
+        item { StatCard("最长连续", "${bestStreak} 天", "所有打卡项目中的最高纪录", Modifier.fillMaxWidth()) }
         item { PixelText("项目详情", color = UiPine, weight = FontWeight.Black, size = MaterialTheme.typography.titleLarge.fontSize) }
 
         if (c.habits.isEmpty()) {
@@ -1053,7 +1316,7 @@ private fun MinePage(c: AppController) {
 }
 
 @Composable
-private fun SettingsCard(title: String, content: @Composable Column.() -> Unit) {
+private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = UiPaper),
         shape = RoundedCornerShape(16.dp),
@@ -1113,12 +1376,7 @@ private fun HabitEditorDialog(
                     require(name.isNotBlank()) { "请输入名称" }
                     require(mask != 0) { "至少选择一天" }
                     val targetValue = target.toIntOrNull()?.coerceAtLeast(1) ?: error("目标必须是数字")
-                    initial.copy(
-                        title = name.trim(),
-                        targetCount = targetValue,
-                        unit = unit.trim().ifBlank { "次" },
-                        weekdaysMask = mask
-                    )
+                    initial.copy(title = name.trim(), targetCount = targetValue, unit = unit.trim().ifBlank { "次" }, weekdaysMask = mask)
                 }.onSuccess(onSave).onFailure { error = it.message }
             }) { Text("保存") }
         },
@@ -1171,12 +1429,8 @@ private fun AlarmEditorDialog(
                         }
                     }
                 }
-                if (type != ScheduleType.INTERVAL) {
-                    item { OutlinedTextField(time, { time = it }, modifier = Modifier.fillMaxWidth(), label = { Text("时间 HH:mm") }) }
-                }
-                if (type == ScheduleType.ONCE) {
-                    item { OutlinedTextField(date, { date = it }, modifier = Modifier.fillMaxWidth(), label = { Text("日期 YYYY-MM-DD") }) }
-                }
+                if (type != ScheduleType.INTERVAL) item { OutlinedTextField(time, { time = it }, modifier = Modifier.fillMaxWidth(), label = { Text("时间 HH:mm") }) }
+                if (type == ScheduleType.ONCE) item { OutlinedTextField(date, { date = it }, modifier = Modifier.fillMaxWidth(), label = { Text("日期 YYYY-MM-DD") }) }
                 if (type == ScheduleType.WEEKLY) {
                     item {
                         PixelText("星期", color = UiSoft)
@@ -1215,9 +1469,7 @@ private fun AlarmEditorDialog(
                     val base = LocalTime.parse(if (type == ScheduleType.INTERVAL) startTime else time, format)
                     val start = if (type == ScheduleType.INTERVAL) LocalTime.parse(startTime, format) else null
                     val end = if (type == ScheduleType.INTERVAL) LocalTime.parse(endTime, format) else null
-                    if (start != null && end != null) {
-                        require(end.hour * 60 + end.minute >= start.hour * 60 + start.minute) { "结束时间不能早于开始时间" }
-                    }
+                    if (start != null && end != null) require(end.hour * 60 + end.minute >= start.hour * 60 + start.minute) { "结束时间不能早于开始时间" }
                     if (type == ScheduleType.WEEKLY) require(weekdaysMask != 0) { "至少选择一天" }
                     initial.copy(
                         title = name.trim(),
@@ -1333,5 +1585,45 @@ private fun AiAlarmDraft.toUiAlarmRule(): AlarmRule {
         sound = sound,
         vibration = vibration,
         notification = notification
+    )
+}
+
+private fun applyAiUpdate(base: AlarmRule, draft: AiAlarmDraft): AlarmRule {
+    val format = DateTimeFormatter.ofPattern("H:mm")
+    val desiredType = draft.scheduleType ?: base.scheduleType
+    val desiredTime = draft.time?.let { runCatching { LocalTime.parse(it, format) }.getOrNull() }
+    val desiredStart = draft.startTime?.let { runCatching { LocalTime.parse(it, format) }.getOrNull() }
+    val desiredEnd = draft.endTime?.let { runCatching { LocalTime.parse(it, format) }.getOrNull() }
+    val weekdaysMask = if (draft.weekdays.isNotEmpty()) {
+        draft.weekdays.fold(0) { current, day -> if (day in 1..7) current or (1 shl (day - 1)) else current }
+    } else base.weekdaysMask
+
+    val hour = when {
+        desiredType == ScheduleType.INTERVAL && desiredStart != null -> desiredStart.hour
+        desiredTime != null -> desiredTime.hour
+        else -> base.hour
+    }
+    val minute = when {
+        desiredType == ScheduleType.INTERVAL && desiredStart != null -> desiredStart.minute
+        desiredTime != null -> desiredTime.minute
+        else -> base.minute
+    }
+
+    val onceAt = if (desiredType == ScheduleType.ONCE) {
+        val baseDate = base.onceAt?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate() }
+        val targetDate = draft.date?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: baseDate ?: LocalDate.now().plusDays(1)
+        targetDate.atTime(hour, minute).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    } else null
+
+    return base.copy(
+        title = draft.title.ifBlank { base.title },
+        scheduleType = desiredType,
+        hour = hour,
+        minute = minute,
+        weekdaysMask = weekdaysMask,
+        onceAt = onceAt,
+        intervalMinutes = draft.intervalMinutes ?: base.intervalMinutes,
+        windowStartMinutes = desiredStart?.let { it.hour * 60 + it.minute } ?: base.windowStartMinutes,
+        windowEndMinutes = desiredEnd?.let { it.hour * 60 + it.minute } ?: base.windowEndMinutes
     )
 }
