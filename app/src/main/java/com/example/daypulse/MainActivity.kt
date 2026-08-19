@@ -87,10 +87,24 @@ private fun TodayScreen(c: AppController, modifier: Modifier) {
 
 @Composable
 private fun AlarmScreen(c: AppController, modifier: Modifier) {
-    val scope = rememberCoroutineScope(); var title by remember { mutableStateOf("") }; var time by remember { mutableStateOf("08:00") }; var type by remember { mutableStateOf(ScheduleType.DAILY) }; var interval by remember { mutableStateOf("120") }; var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    var title by remember { mutableStateOf("") }
+    var time by remember { mutableStateOf("08:00") }
+    var type by remember { mutableStateOf(ScheduleType.DAILY) }
+    var interval by remember { mutableStateOf("120") }
+    var message by remember { mutableStateOf<String?>(null) }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("闹钟", style = MaterialTheme.typography.headlineMedium) }
-        item { OutlinedTextField(title,{title=it},label={Text("提醒名称")},Modifier.fillMaxWidth()); OutlinedTextField(time,{time=it},label={Text("时间 HH:mm")},Modifier.fillMaxWidth()); Row { ScheduleType.entries.forEach { FilterChip(type==it,{type=it},{Text(it.name)},Modifier.padding(end=4.dp)) } }; if(type==ScheduleType.INTERVAL) OutlinedTextField(interval,{interval=it},label={Text("间隔分钟")},Modifier.fillMaxWidth()); Button({ scope.launch { runCatching { c.addAlarm(manualRule(title,time,type,interval)) }.onSuccess { title=""; message="已创建" }.onFailure { message=it.message } } }, enabled=title.isNotBlank()) { Text("创建提醒") }; message?.let { Text(it) } }
+        item {
+            OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), label = { Text("提醒名称") })
+            OutlinedTextField(value = time, onValueChange = { time = it }, modifier = Modifier.fillMaxWidth(), label = { Text("时间 HH:mm") })
+            Row { ScheduleType.entries.forEach { FilterChip(selected = type == it, onClick = { type = it }, label = { Text(it.name) }, modifier = Modifier.padding(end = 4.dp)) } }
+            if (type == ScheduleType.INTERVAL) {
+                OutlinedTextField(value = interval, onValueChange = { interval = it }, modifier = Modifier.fillMaxWidth(), label = { Text("间隔分钟") })
+            }
+            Button({ scope.launch { runCatching { c.addAlarm(manualRule(title,time,type,interval)) }.onSuccess { title=""; message="已创建" }.onFailure { message=it.message } } }, enabled=title.isNotBlank()) { Text("创建提醒") }
+            message?.let { Text(it) }
+        }
         items(c.alarms, key={it.id}) { a -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) { Text(a.title, style=MaterialTheme.typography.titleMedium); Text(summary(a)); Row { Button({scope.launch{c.toggleAlarm(a)}}){Text(if(a.enabled)"暂停" else "启用")}; TextButton({scope.launch{c.deleteAlarm(a)}}){Text("删除")} } } } }
     }
 }
