@@ -9,7 +9,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.example.daypulse.MainActivity
+import com.example.daypulse.ForestMainActivity
 import com.example.daypulse.data.AppDatabase
 import com.example.daypulse.model.ScheduleType
 
@@ -61,7 +61,7 @@ object NotificationHelper {
         return PendingIntent.getActivity(
             context,
             100,
-            Intent(context, MainActivity::class.java),
+            Intent(context, ForestMainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
@@ -71,7 +71,7 @@ object NotificationHelper {
         val notification = NotificationCompat.Builder(context, CHANNEL_ALARMS)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
-            .setContentText("该打卡/提醒时间到了")
+            .setContentText("提醒时间到了")
             .setContentIntent(contentIntent(context))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
