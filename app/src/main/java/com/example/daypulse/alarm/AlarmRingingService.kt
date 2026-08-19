@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -21,6 +22,7 @@ import com.example.daypulse.data.AppDatabase
 class AlarmRingingService : Service() {
     private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
@@ -39,8 +41,15 @@ class AlarmRingingService : Service() {
             return START_NOT_STICKY
         }
 
+        acquireWakeLock()
+
         val stopIntent = Intent(this, AlarmActionReceiver::class.java).apply { action = AlarmActionReceiver.ACTION_STOP }
-        val stopPi = PendingIntent.getBroadcast(this, 22, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val stopPi = PendingIntent.getBroadcast(
+            this,
+            22,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val ringIntent = Intent(this, AlarmRingActivity::class.java).apply {
             putExtra(AlarmRingActivity.EXTRA_TITLE, rule.title)
@@ -55,13 +64,15 @@ class AlarmRingingService : Service() {
 
         val notification = NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ALARMS)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle(rule.title)
+            .setContentTitle(rule.title.ifBlank { "DayPulse 闹钟" })
             .setContentText("提醒时间到了")
             .setContentIntent(ringPi)
             .setFullScreenIntent(ringPi, true)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setOngoing(true)
+            .setAutoCancel(false)
             .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(android.R.drawable.ic_media_pause, "停止", stopPi)
             .build()
 
@@ -72,6 +83,18 @@ class AlarmRingingService : Service() {
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({ stopSelf() }, 120_000L)
         return START_NOT_STICKY
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val power = getSystemService(PowerManager::class.java)
+        wakeLock = power.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "DayPulse:AlarmRinging"
+        ).apply {
+            setReferenceCounted(false)
+            acquire(125_000L)
+        }
     }
 
     private fun startRingtone() {
@@ -96,8 +119,9 @@ class AlarmRingingService : Service() {
             getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
         val pattern = longArrayOf(0, 700, 350, 700, 350)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
-        else {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        } else {
             @Suppress("DEPRECATION")
             vibrator?.vibrate(pattern, 0)
         }
@@ -107,6 +131,8 @@ class AlarmRingingService : Service() {
         handler.removeCallbacksAndMessages(null)
         ringtone?.stop()
         vibrator?.cancel()
+        if (wakeLock?.isHeld == true) runCatching { wakeLock?.release() }
+        wakeLock = null
         ringtone = null
         vibrator = null
         super.onDestroy()
@@ -117,7 +143,9 @@ class AlarmRingingService : Service() {
 
 class AlarmActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == ACTION_STOP) context.stopService(Intent(context, AlarmRingingService::class.java))
+        if (intent.action == ACTION_STOP) {
+            context.stopService(Intent(context, AlarmRingingService::class.java))
+        }
     }
 
     companion object {
