@@ -35,6 +35,10 @@
         </activity>
 
         <activity
+            android:name=".voice.HuaweiMlSetupActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".alarm.AlarmRingActivity"
             android:excludeFromRecents="true"
             android:exported="false"
