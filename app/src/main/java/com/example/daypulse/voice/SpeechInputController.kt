@@ -10,6 +10,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import com.example.daypulse.security.SecureHuaweiMlKeyStore
 import com.huawei.agconnect.config.AGConnectServicesConfig
 import com.huawei.hms.mlsdk.asr.MLAsrConstants
 import com.huawei.hms.mlsdk.asr.MLAsrListener
@@ -32,6 +33,7 @@ class SpeechInputController(
 ) {
     private val appContext = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
+    private val huaweiKeyStore = SecureHuaweiMlKeyStore(appContext)
 
     private var androidRecognizer: SpeechRecognizer? = null
     private var hmsRecognizer: MLAsrRecognizer? = null
@@ -70,14 +72,16 @@ class SpeechInputController(
         usingHms = true
         providerName = "Huawei ML Kit"
 
-        val apiKey = runCatching {
+        val storedKey = huaweiKeyStore.load()?.trim().orEmpty()
+        val bundledKey = runCatching {
             AGConnectServicesConfig.fromContext(appContext).getString("client/api_key")
         }.getOrNull()?.trim().orEmpty()
+        val apiKey = storedKey.ifBlank { bundledKey }
 
         if (apiKey.isBlank()) {
             usingHms = false
             onListeningChange(false)
-            onStatus("已检测到华为/HarmonyOS，但缺少 Huawei ML Kit 配置。需要把 AppGallery Connect 的 agconnect-services.json 加入 DayPulse 后才能使用华为语音识别。")
+            onStatus("已检测到华为/HarmonyOS。请先在“我的 → 华为语音”中填写 Huawei ML Kit API Key。")
             return
         }
 
@@ -89,6 +93,7 @@ class SpeechInputController(
                 setAsrListener(hmsListener)
             }
 
+            usingHms = true
             listening = true
             finishing = false
             onListeningChange(true)
@@ -152,9 +157,6 @@ class SpeechInputController(
         onListeningChange(false)
 
         if (usingHms) {
-            // MLAsrRecognizer has no Android-style stopListening() API. WORDFLUX continuously gives
-            // us the latest recognized text; on the second tap we use that text immediately. If the
-            // final callback is still in flight, give it a short grace period before releasing HMS.
             val partial = latestHmsPartial.trim()
             if (partial.isNotBlank()) {
                 finishing = false
