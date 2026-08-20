@@ -9,6 +9,7 @@ import com.example.daypulse.alarm.AlarmScheduler
 import com.example.daypulse.data.AppDatabase
 import com.example.daypulse.model.*
 import com.example.daypulse.security.SecureApiKeyStore
+import com.example.daypulse.security.SecureHuaweiMlKeyStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -19,6 +20,7 @@ class AppController(context: Context) {
     private val db = AppDatabase(appContext)
     val scheduler = AlarmScheduler(appContext)
     private val keyStore = SecureApiKeyStore(appContext)
+    private val huaweiKeyStore = SecureHuaweiMlKeyStore(appContext)
     private val aiClient = SiliconFlowClient()
 
     var habits by mutableStateOf<List<Habit>>(emptyList()); private set
@@ -27,14 +29,23 @@ class AppController(context: Context) {
     var workdayOverrides by mutableStateOf<List<WorkdayOverride>>(emptyList()); private set
     var loading by mutableStateOf(true); private set
     var hasApiKey by mutableStateOf(false); private set
+    var hasHuaweiMlKey by mutableStateOf(false); private set
 
     suspend fun load() {
         loading = true
         val snapshot = withContext(Dispatchers.IO) {
-            Snapshot(db.getHabits(), db.getCheckIns(), db.getAlarms(), db.getWorkdayOverrides(), keyStore.hasKey())
+            Snapshot(
+                db.getHabits(),
+                db.getCheckIns(),
+                db.getAlarms(),
+                db.getWorkdayOverrides(),
+                keyStore.hasKey(),
+                huaweiKeyStore.hasKey()
+            )
         }
         habits = snapshot.habits; checkIns = snapshot.checkIns; alarms = snapshot.alarms
-        workdayOverrides = snapshot.overrides; hasApiKey = snapshot.hasKey; loading = false
+        workdayOverrides = snapshot.overrides; hasApiKey = snapshot.hasKey
+        hasHuaweiMlKey = snapshot.hasHuaweiKey; loading = false
     }
 
     suspend fun addHabit(title: String, targetCount: Int = 1, unit: String = "次", weekdaysMask: Int = 127) {
@@ -148,6 +159,17 @@ class AppController(context: Context) {
 
     suspend fun clearApiKey() { withContext(Dispatchers.IO) { keyStore.clear() }; hasApiKey = false }
 
+    suspend fun saveHuaweiMlKey(apiKey: String) {
+        require(apiKey.isNotBlank()) { "Huawei ML Kit API Key 不能为空" }
+        withContext(Dispatchers.IO) { huaweiKeyStore.save(apiKey.trim()) }
+        hasHuaweiMlKey = true
+    }
+
+    suspend fun clearHuaweiMlKey() {
+        withContext(Dispatchers.IO) { huaweiKeyStore.clear() }
+        hasHuaweiMlKey = false
+    }
+
     suspend fun setWorkdayOverride(dateKey: String, isWorkday: Boolean) {
         LocalDate.parse(dateKey)
         withContext(Dispatchers.IO) { db.setWorkdayOverride(dateKey, isWorkday) }
@@ -211,5 +233,12 @@ class AppController(context: Context) {
     private suspend fun refreshAlarms() { alarms = withContext(Dispatchers.IO) { db.getAlarms() } }
     private suspend fun rescheduleWorkdayAlarms() { alarms.filter { it.enabled && it.scheduleType == ScheduleType.WORKDAY }.forEach { scheduler.schedule(it) } }
 
-    private data class Snapshot(val habits: List<Habit>, val checkIns: List<CheckIn>, val alarms: List<AlarmRule>, val overrides: List<WorkdayOverride>, val hasKey: Boolean)
+    private data class Snapshot(
+        val habits: List<Habit>,
+        val checkIns: List<CheckIn>,
+        val alarms: List<AlarmRule>,
+        val overrides: List<WorkdayOverride>,
+        val hasKey: Boolean,
+        val hasHuaweiKey: Boolean
+    )
 }
