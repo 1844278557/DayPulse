@@ -66,5 +66,10 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
+    // Huawei/HarmonyOS speech path. Catroid uses the same HMS ML Kit ASR family.
+    implementation("com.huawei.hms:ml-computer-voice-asr:3.9.0.300")
+    implementation("com.huawei.hms:ml-computer-voice-asr-plugin:3.9.0.300")
+    implementation("com.huawei.agconnect:agconnect-core:1.9.1.301")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
