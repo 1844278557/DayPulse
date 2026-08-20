@@ -17,13 +17,6 @@ import com.huawei.hms.mlsdk.asr.MLAsrListener
 import com.huawei.hms.mlsdk.asr.MLAsrRecognizer
 import com.huawei.hms.mlsdk.common.MLApplication
 
-/**
- * DayPulse voice input.
- *
- * Huawei/HarmonyOS devices use Huawei ML Kit ASR directly. Other Android devices keep the
- * platform SpeechRecognizer fallback. This mirrors the provider split used by mature apps such
- * as Catroid instead of forcing Huawei phones through Android's default RecognitionService.
- */
 class SpeechInputController(
     context: Context,
     private val onListeningChange: (Boolean) -> Unit,
@@ -64,7 +57,6 @@ class SpeechInputController(
         heardSpeech = false
         latestHmsPartial = ""
         onPartialText("")
-
         if (isHuaweiDevice) startHuaweiAsr() else startAndroidAsr()
     }
 
@@ -81,7 +73,13 @@ class SpeechInputController(
         if (apiKey.isBlank()) {
             usingHms = false
             onListeningChange(false)
-            onStatus("已检测到华为/HarmonyOS。请先在“我的 → 华为语音”中填写 Huawei ML Kit API Key。")
+            onStatus("已检测到华为/HarmonyOS。先配置一次 Huawei ML Kit API Key。")
+            runCatching {
+                appContext.startActivity(
+                    Intent(appContext, HuaweiMlSetupActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
             return
         }
 
@@ -92,13 +90,11 @@ class SpeechInputController(
             hmsRecognizer = MLAsrRecognizer.createAsrRecognizer(appContext).apply {
                 setAsrListener(hmsListener)
             }
-
             usingHms = true
             listening = true
             finishing = false
             onListeningChange(true)
             onStatus("Huawei ML Kit 正在启动语音识别…")
-
             val intent = Intent(MLAsrConstants.ACTION_HMS_ASR_SPEECH)
                 .putExtra(MLAsrConstants.LANGUAGE, "zh-CN")
                 .putExtra(MLAsrConstants.FEATURE, MLAsrConstants.FEATURE_WORDFLUX)
@@ -114,33 +110,24 @@ class SpeechInputController(
 
     private fun startAndroidAsr() {
         usingHms = false
-        val services = appContext.packageManager.queryIntentServices(
-            Intent(RecognitionService.SERVICE_INTERFACE),
-            0
-        )
+        val services = appContext.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
         if (services.isEmpty()) {
             onListeningChange(false)
             onStatus("本机没有发现可供第三方 App 使用的语音识别服务")
             return
         }
-
         providerName = services.firstOrNull()?.serviceInfo?.packageName ?: "系统语音服务"
         if (!SpeechRecognizer.isRecognitionAvailable(appContext)) {
             onListeningChange(false)
             onStatus("检测到了 $providerName，但 Android SpeechRecognizer 当前不可用")
             return
         }
-
         releaseAndroidRecognizer(cancel = true)
         listening = true
         finishing = false
         onListeningChange(true)
         onStatus("正在听… 再点一次 AI 结束")
-
-        androidRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply {
-            setRecognitionListener(androidListener)
-        }
-
+        androidRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply { setRecognitionListener(androidListener) }
         runCatching { androidRecognizer?.startListening(androidRecognitionIntent) }
             .onFailure {
                 listening = false
@@ -184,7 +171,6 @@ class SpeechInputController(
                 releaseAndroidRecognizer(cancel = true)
                 return
             }
-
         handler.postDelayed({
             if (finishing && !usingHms) {
                 finishing = false
