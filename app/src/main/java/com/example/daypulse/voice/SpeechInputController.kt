@@ -8,6 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -15,9 +16,8 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 
 /**
- * DayPulse two-tap voice controller. The microphone is captured directly by AudioRecord:
- * it never binds to the non-responsive Huawei FakeRecognitionService or requires HMS keys.
- * Only the temporary recording and the user's existing SiliconFlow API key are uploaded to ASR.
+ * Two-tap voice controller: AudioRecord -> temporary WAV -> SiliconFlow SenseVoiceSmall.
+ * No SpeechRecognizer service, Huawei developer account, or HMS key is required.
  */
 class SpeechInputController(
     context: Context,
@@ -58,7 +58,7 @@ class SpeechInputController(
                 activeApiKey = key
                 withContext(Dispatchers.IO) { recorder.start() }
                 if (requestId != generation || destroyed) {
-                    withContext(Dispatchers.IO) { recorder.cancel() }
+                    withContext(NonCancellable + Dispatchers.IO) { recorder.cancel() }
                     return@launch
                 }
                 recording = true
@@ -71,13 +71,14 @@ class SpeechInputController(
                 recordingDeadline = deadline
                 handler.postDelayed(deadline, 60_000L)
             } catch (cancel: CancellationException) {
+                withContext(NonCancellable + Dispatchers.IO) { recorder.cancel() }
                 throw cancel
             } catch (error: Exception) {
                 if (requestId == generation && !destroyed) {
                     onListeningChange(false)
                     onStatus("无法开始录音：${error.message ?: "请检查麦克风权限"}")
                 }
-                withContext(Dispatchers.IO) { recorder.cancel() }
+                withContext(NonCancellable + Dispatchers.IO) { recorder.cancel() }
             } finally {
                 if (requestId == generation && !recording) processing = false
             }
@@ -133,8 +134,9 @@ class SpeechInputController(
         processing = false
         activeApiKey = null
         onListeningChange(false)
-        // Cancelling AudioRecord is safe even when its capture worker is still unwinding.
-        scope.launch(Dispatchers.IO) { recorder.cancel() }
+        // Do not schedule cleanup on scope: destroy() cancels that scope immediately.
+        // The startup coroutine also cleans up under NonCancellable if cancellation races start().
+        recorder.cancel()
     }
 
     fun destroy() {
