@@ -8,9 +8,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
-/** Uploads a single WAV recording with the user's existing, locally stored SiliconFlow key. */
+/** Uploads one WAV recording using the user's existing SiliconFlow API key. */
 class SiliconFlowAsrService(
-    private val endpoint: URL = URL("https://api.siliconflow.cn/v1/audio/transcriptions")
+    private val endpoint: URL = URL("https://api.siliconflow.cn/v1/audio/transcriptions"),
+    private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
 ) {
     suspend fun transcribe(audio: File, apiKey: String): String = withContext(Dispatchers.IO) {
         require(apiKey.isNotBlank()) { "请先在「我的」页面填写硅基流动 API Key" }
@@ -31,7 +32,7 @@ class SiliconFlowAsrService(
         val ending = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
         val total = modelPart.size + fileHeader.size + audio.length() + ending.size
 
-        val connection = endpoint.openConnection() as HttpURLConnection
+        val connection = openConnection(endpoint)
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 15_000
@@ -50,7 +51,7 @@ class SiliconFlowAsrService(
 
             val status = connection.responseCode
             if (status !in 200..299) {
-                // Do not expose server response bodies, which could contain uploaded text or secrets.
+                // Never display server response bodies: they may contain user audio text or secrets.
                 val reason = when (status) {
                     400, 415, 422 -> "服务端不接受该音频格式（HTTP $status）"
                     401, 403 -> "SiliconFlow API Key 无效或没有语音模型访问权限（HTTP $status）"
