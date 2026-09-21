@@ -16,6 +16,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -66,10 +67,16 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
-    // Huawei/HarmonyOS speech path. Catroid uses the same HMS ML Kit ASR family.
+    // HMS stays available for existing settings during migration; direct microphone capture
+    // and SiliconFlow ASR do not use these libraries.
     implementation("com.huawei.hms:ml-computer-voice-asr:3.9.0.300")
     implementation("com.huawei.hms:ml-computer-voice-asr-plugin:3.9.0.300")
     implementation("com.huawei.agconnect:agconnect-core:1.9.1.301")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
 }
