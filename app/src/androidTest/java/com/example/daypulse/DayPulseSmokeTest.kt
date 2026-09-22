@@ -1,19 +1,30 @@
 package com.example.daypulse
 
+import android.Manifest
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.rule.GrantPermissionRule
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
 
-/** No microphone device, cloud API key or live network is required for these UI smoke tests. */
+/** No live microphone, cloud key, or network is required for the UI smoke tests. */
 @RunWith(AndroidJUnit4::class)
 class DayPulseSmokeTest {
+    // The app asks for notifications in its first LaunchedEffect. Grant this *before*
+    // ActivityScenarioRule launches DayPulseActivity, otherwise the Android permission
+    // dialog can stop the activity before Compose exposes its semantics tree.
+    private val notificationPermission =
+        GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
+    private val compose = createAndroidComposeRule<DayPulseActivity>()
+
     @get:Rule
-    val compose = createAndroidComposeRule<DayPulseActivity>()
+    val rules: TestRule = RuleChain.outerRule(notificationPermission).around(compose)
 
     @Test
     fun homeShowsVoiceEntryWithoutStartingMicrophone() {
